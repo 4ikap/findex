@@ -1,4 +1,5 @@
 import bz2
+from functools import lru_cache
 from pathlib import Path
 from typing import Generator, Tuple
 
@@ -23,6 +24,35 @@ def iter_documents(data_dir: str | Path) -> Generator[Tuple[str, str], None, Non
                     yield doc_id, line.strip()
         except Exception as e:
             print(f"Помилка читання файлу {file_path.name}: {e}")
+
+
+# --- ЛАБ 3: повернення тексту документа за його doc_id (потрібно для сніпетів) ---
+
+@lru_cache(maxsize=None)
+def _find_file(data_dir: str, name: str) -> Path | None:
+    """Шукає .bz2 файл за іменем у папці з даними (результат кешується)."""
+    for file_path in Path(data_dir).rglob("*.bz2"):
+        if file_path.name == name:
+            return file_path
+    return None
+
+
+def read_document(data_dir: str | Path, doc_id: str) -> str:
+    """Повертає текст документа за doc_id виду '<файл>.bz2_line_<N>'."""
+    name, sep, number = doc_id.rpartition("_line_")
+    if not sep or not number.isdigit():
+        raise ValueError(f"Невірний doc_id: {doc_id!r}")
+
+    file_path = _find_file(str(data_dir), name)
+    if file_path is None:
+        raise FileNotFoundError(f"Файл {name} не знайдено в {data_dir}")
+
+    target = int(number)
+    with bz2.open(file_path, "rt", encoding="utf-8", errors="ignore") as f:
+        for line_num, line in enumerate(f, 1):
+            if line_num == target:
+                return line.strip()
+    raise KeyError(f"У файлі {name} немає рядка {target}")
 
 
 if __name__ == "__main__":

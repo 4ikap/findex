@@ -1,10 +1,26 @@
 import argparse
-import pickle
-import tracemalloc
+import heapq
+import logging
+from collections import defaultdict
+from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
-from typing import List, Set, Dict
-from findex.index import Posting, DocMeta, build_inverted_index
+from typing import Dict, List, Set, Tuple
 
+from findex.core import read_document
+from findex.index import Index, Posting, open_index
+from findex.query import parse_query
+from findex.scoring import BM25, Scorer, TfIdf
+from findex.snippets import best_snippet
+from findex.utils import timed
+
+log = logging.getLogger("findex")
+
+
+# ============================================================
+# ЛАБ 2 (залишено): булеві движки merge / set для запитів "термін ОПЕРАТОР термін"
+# Працюють і з новим Index, бо він підтримує index.get(term, []).
+# ============================================================
 
 # --- Движок 1: Two-Pointer Merge ---
 
@@ -61,12 +77,11 @@ def set_not(p1: List[Posting], p2: List[Posting]) -> Set[str]:
     return {p.doc_id for p in p1}.difference(p.doc_id for p in p2)
 
 
-# --- Пошуковий процесор ---
-
-def execute_query(query: str, index: Dict[str, List[Posting]], engine: str = "merge") -> Set[str]:
+def execute_query(query: str, index, engine: str = "merge") -> Set[str]:
     """
     Простий парсер та виконавець булевих запитів (підтримує терміни через AND, OR, NOT).
     Приклад запиту: "python AND code", "data NOT test"
+    (Лаб 2. Для складних запитів із дужками та фразами — SearchEngine нижче.)
     """
     parts = query.strip().split()
     if not parts:
@@ -104,50 +119,102 @@ def execute_query(query: str, index: Dict[str, List[Posting]], engine: str = "me
             return {p.doc_id for p in postings1}
 
 
-# --- УВАГА БЕЗПЕКИ PICKLE ---
-# Завантаження файлів pickle (`pickle.load`) з ненадійних джерел є критично небезпечним,
-# оскільки під час десеріалізації бібліотека може виконати довільний домішок коду (RCE),
-# закладений у байт-коді злочинцем. Використовувати pickle лише для власних локальних даних.
+# ============================================================
+# ЛАБ 3: ранжований пошук
+# ============================================================
+
+@dataclass(frozen=True, order=True)
+class SearchResult:
+    """Результат пошуку. order=True: порівнюються за score (doc_id у порівнянні не бере участі)."""
+
+    score: float
+    doc_id: str = field(compare=False)
 
 
-def save_index(index, meta, path: Path):
-    with open(path, "wb") as f:
-        pickle.dump({"index": index, "meta": meta}, f)
+class SearchEngine:
+    """Ранжований пошук: парсить запит, знаходить документи, рахує бали Scorer-ом."""
+
+    def __init__(self, index: Index, scorer: Scorer | None = None, cache_size: int = 128):
+        self.index = index
+        self.scorer: Scorer = scorer or BM25()
+        # lru_cache: рядок запиту -> (множина doc_id, терміни для рейтингу)
+        self._cached_match = lru_cache(maxsize=cache_size)(self._match)
+        # коли індекс закривається, кеш очищається
+        index.on_close(self._cached_match.cache_clear)
+
+    def _match(self, query: str) -> Tuple[frozenset, Tuple[str, ...]]:
+        tree = parse_query(query)
+        ids = frozenset(tree.evaluate(self.index))
+        terms = tuple(dict.fromkeys(tree.terms()))  # унікальні, зі збереженням порядку
+        return ids, terms
+
+    def matching(self, query: str) -> Tuple[frozenset, Tuple[str, ...]]:
+        """Обгортка над кешем, яка пише в лог cache HIT / MISS."""
+        hits_before = self._cached_match.cache_info().hits
+        result = self._cached_match(query)
+        if self._cached_match.cache_info().hits > hits_before:
+            log.info("[cache] HIT  %r", query)
+        else:
+            log.info("[cache] MISS %r", query)
+        return result
+
+    @timed
+    def search(self, query: str, k: int = 10) -> List[SearchResult]:
+        ids, terms = self.matching(query)
+
+        # накопичуємо бали по всіх термінах запиту
+        scores: Dict[str, float] = defaultdict(float)
+        for term in terms:
+            df = self.index.df(term)
+            for posting in self.index.get(term, ()):
+                if posting.doc_id in ids:
+                    scores[posting.doc_id] += self.scorer.score(
+                        posting.freq, df, self.index.doc_length(posting.doc_id), self.index
+                    )
+
+        # sorted() — щоб при однакових балах порядок був детермінованим
+        candidates = sorted(scores) if scores else sorted(ids)
+        results = (SearchResult(scores.get(doc_id, 0.0), doc_id) for doc_id in candidates)
+        return heapq.nlargest(k, results)
 
 
-def load_index(path: Path):
-    with open(path, "rb") as f:
-        data = pickle.load(f)
-    return data["index"], data["meta"]
+# --- CLI ---
+
+SCORERS = {"bm25": BM25, "tfidf": TfIdf}
+BOLD, RESET = "\033[1;33m", "\033[0m"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Findex Search CLI (ранжований пошук)")
+    parser.add_argument("index_file", type=Path, help="Шлях до файлу індексу (.bin або .json)")
+    parser.add_argument("query", type=str, help='Запит, напр.: python AND (async OR await) NOT java "event loop"')
+    parser.add_argument("--scorer", choices=list(SCORERS), default="bm25", help="Функція рейтингу")
+    parser.add_argument("-k", type=int, default=10, help="Скільки результатів показати")
+    parser.add_argument("--data", type=Path, default=None, help="Папка з корпусом (для сніпетів)")
+    parser.add_argument("--repeat", type=int, default=1, help="Повторити запит N разів (щоб побачити cache HIT)")
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    with open_index(args.index_file) as index:
+        print(index)
+        engine = SearchEngine(index, SCORERS[args.scorer]())
+
+        for _ in range(args.repeat):
+            results = engine.search(args.query, args.k)
+
+        terms = parse_query(args.query).terms()
+        print(f"\nТоп-{len(results)} за запитом {args.query!r} ({args.scorer}):")
+        for rank, result in enumerate(results, 1):
+            print(f"{rank:>2}. {result.score:8.4f}  {result.doc_id}")
+            if args.data:
+                text = read_document(args.data, result.doc_id)
+                print("    " + best_snippet(text, terms, mark=(BOLD, RESET)))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Findex Search CLI")
-    parser.add_argument("index_file", type=Path, help="Шлях до файлу індексу (.bin)")
-    parser.add_argument("query", type=str, help="Пошуковий запит (наприклад: ' слово AND слово ')")
-    parser.add_argument("--engine", choices=["merge", "set"], default="merge", help="Вибір пошукового движка")
-
-    args = parser.parse_args()
-
-    # Заміри пам'яті через tracemalloc
-    tracemalloc.start()
-
-    print(f"Завантаження індексу з {args.index_file}...")
-    index, meta = load_index(args.index_file)
-
-    print(f"Виконання пошуку ('{args.query}') через движок [{args.engine}]...")
-    results = execute_query(args.query, index, engine=args.engine)
-
-    current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    print(f"\nЗнайдено збігів: {len(results)}")
-    print(f"Пік споживання пам'яті: {peak / 1024 / 1024:.2f} MB")
+    main()
 
 
-
-
-
-#python -m findex.search index.bin "the" --engine merge      команду пошуку
-
-#python -m findex.search index.bin "the AND and" --engine merge    виконання булевого пошуку
+#python -m findex.search index.bin "the" --scorer bm25 -k 5                       простий запит
+#python -m findex.search index.bin 'python AND (async OR await) NOT java "event loop"' --data data --repeat 2

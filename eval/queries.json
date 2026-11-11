@@ -1,0 +1,53 @@
+[
+  {"query": "\"старий чоловік\"", "relevant": [
+    "fiction.tokenized.shuffled.txt.bz2_line_1247636",
+    "fiction.tokenized.shuffled.txt.bz2_line_508564",
+    "fiction.tokenized.shuffled.txt.bz2_line_1403017",
+    "fiction.tokenized.shuffled.txt.bz2_line_1076647",
+    "fiction.tokenized.shuffled.txt.bz2_line_1610157",
+    "fiction.tokenized.shuffled.txt.bz2_line_11029",
+    "fiction.tokenized.shuffled.txt.bz2_line_1256316"]},
+  {"query": "мати AND дитина", "relevant": [
+    "fiction.tokenized.shuffled.txt.bz2_line_1004553",
+    "fiction.tokenized.shuffled.txt.bz2_line_1372407",
+    "fiction.tokenized.shuffled.txt.bz2_line_625245",
+    "fiction.tokenized.shuffled.txt.bz2_line_728848",
+    "fiction.tokenized.shuffled.txt.bz2_line_682292",
+    "fiction.tokenized.shuffled.txt.bz2_line_1605685"]},
+  {"query": "ліс OR гори", "relevant": [
+    "fiction.tokenized.shuffled.txt.bz2_line_1327238",
+    "fiction.tokenized.shuffled.txt.bz2_line_117444",
+    "fiction.tokenized.shuffled.txt.bz2_line_1122104",
+    "fiction.tokenized.shuffled.txt.bz2_line_453882",
+    "fiction.tokenized.shuffled.txt.bz2_line_910064",
+    "fiction.tokenized.shuffled.txt.bz2_line_716903",
+    "fiction.tokenized.shuffled.txt.bz2_line_390089",
+    "fiction.tokenized.shuffled.txt.bz2_line_785494"]},
+  {"query": "дощ AND ніч", "relevant": [
+    "fiction.tokenized.shuffled.txt.bz2_line_1169055",
+    "fiction.tokenized.shuffled.txt.bz2_line_1723323",
+    "fiction.tokenized.shuffled.txt.bz2_line_1030724",
+    "fiction.tokenized.shuffled.txt.bz2_line_1248639",
+    "fiction.tokenized.shuffled.txt.bz2_line_1188171",
+    "fiction.tokenized.shuffled.txt.bz2_line_624515",
+    "fiction.tokenized.shuffled.txt.bz2_line_1611843"]},
+  {"query": "море AND корабель", "relevant": [
+    "fiction.tokenized.shuffled.txt.bz2_line_1632790",
+    "fiction.tokenized.shuffled.txt.bz2_line_341883",
+    "fiction.tokenized.shuffled.txt.bz2_line_896023",
+    "fiction.tokenized.shuffled.txt.bz2_line_1357116",
+    "fiction.tokenized.shuffled.txt.bz2_line_1725170",
+    "fiction.tokenized.shuffled.txt.bz2_line_929481",
+    "fiction.tokenized.shuffled.txt.bz2_line_1364420"]},
+  {"query": "зброя NOT війна", "relevant": [
+    "fiction.tokenized.shuffled.txt.bz2_line_1190708",
+    "fiction.tokenized.shuffled.txt.bz2_line_1285003",
+    "fiction.tokenized.shuffled.txt.bz2_line_1455724",
+    "fiction.tokenized.shuffled.txt.bz2_line_1515251"]},
+  {"query": "\"добрий день\"", "relevant": [
+    "fiction.tokenized.shuffled.txt.bz2_line_1163785",
+    "fiction.tokenized.shuffled.txt.bz2_line_1476380",
+    "fiction.tokenized.shuffled.txt.bz2_line_1165185",
+    "fiction.tokenized.shuffled.txt.bz2_line_1475313",
+    "fiction.tokenized.shuffled.txt.bz2_line_1667750"]}
+]

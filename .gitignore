@@ -3,3 +3,6 @@ index.bin
 index.json
 *.bin
 *.json
+!eval/queries.json
+__pycache__/
+*.pyc
