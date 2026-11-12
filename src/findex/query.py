@@ -11,36 +11,35 @@
 "A NOT B" означає "A AND (NOT B)".
 """
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
-from typing import List, Set, Tuple
 
+from findex.errors import MissingPositionsError, QuerySyntaxError
+from findex.index import Index
 from findex.tokenize import tokenize
 
-
-class QuerySyntaxError(ValueError):
-    pass
-
-
 # --- Вузли дерева запиту ---
+
 
 class Node:
     """Базовий вузол. Оператори &, |, ~ будують дерево."""
 
-    def __and__(self, other: "Node") -> "And":
+    def __and__(self, other: Node) -> And:
         return And(self, other)
 
-    def __or__(self, other: "Node") -> "Or":
+    def __or__(self, other: Node) -> Or:
         return Or(self, other)
 
-    def __invert__(self) -> "Not":
+    def __invert__(self) -> Not:
         return Not(self)
 
-    def evaluate(self, index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         """Повертає множину doc_id, що задовольняють вузол."""
         raise NotImplementedError
 
-    def terms(self) -> List[str]:
+    def terms(self) -> list[str]:
         """Терміни, що додатно впливають на рейтинг (без тих, що під NOT)."""
         raise NotImplementedError
 
@@ -49,29 +48,26 @@ class Node:
 class Term(Node):
     text: str
 
-    def evaluate(self, index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         return {p.doc_id for p in index.get(self.text, ())}
 
-    def terms(self) -> List[str]:
+    def terms(self) -> list[str]:
         return [self.text]
 
 
 @dataclass(frozen=True)
 class Phrase(Node):
-    words: Tuple[str, ...]
+    words: tuple[str, ...]
 
-    def evaluate(self, index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         if not index.has_positions:
-            raise ValueError(
-                "Індекс збудовано без позицій. Перебудуйте його з прапорцем --positions."
+            raise MissingPositionsError(
+                "Індекс збудовано без позицій. Перебудуйте його: findex index --positions"
             )
         # для кожного слова: doc_id -> позиції
-        per_word = [
-            {p.doc_id: p.positions for p in index.get(word, ())}
-            for word in self.words
-        ]
+        per_word = [{p.doc_id: p.positions for p in index.get(word, ())} for word in self.words]
         candidates = set(per_word[0]).intersection(*per_word[1:])
-        result = set()
+        result: set[str] = set()
         for doc_id in candidates:
             # можливі початки фрази: позиції першого слова, узгоджені з наступними
             starts = set(per_word[0][doc_id])
@@ -83,7 +79,7 @@ class Phrase(Node):
                 result.add(doc_id)
         return result
 
-    def terms(self) -> List[str]:
+    def terms(self) -> list[str]:
         return list(self.words)
 
 
@@ -92,10 +88,10 @@ class And(Node):
     left: Node
     right: Node
 
-    def evaluate(self, index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         return self.left.evaluate(index) & self.right.evaluate(index)
 
-    def terms(self) -> List[str]:
+    def terms(self) -> list[str]:
         return self.left.terms() + self.right.terms()
 
 
@@ -104,10 +100,10 @@ class Or(Node):
     left: Node
     right: Node
 
-    def evaluate(self, index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         return self.left.evaluate(index) | self.right.evaluate(index)
 
-    def terms(self) -> List[str]:
+    def terms(self) -> list[str]:
         return self.left.terms() + self.right.terms()
 
 
@@ -115,10 +111,10 @@ class Or(Node):
 class Not(Node):
     child: Node
 
-    def evaluate(self, index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         return set(index.meta.keys() - self.child.evaluate(index))
 
-    def terms(self) -> List[str]:
+    def terms(self) -> list[str]:
         return []
 
 
@@ -127,10 +123,10 @@ class Not(Node):
 _TOKEN_RE = re.compile(r'"([^"]*)"|(\()|(\))|([^\s()"]+)')
 
 
-def _lex(query: str) -> List[Tuple[str, str]]:
+def _lex(query: str) -> list[tuple[str, str]]:
     if query.count('"') % 2:
         raise QuerySyntaxError("Незакриті лапки у запиті")
-    tokens = []
+    tokens: list[tuple[str, str]] = []
     for match in _TOKEN_RE.finditer(query):
         phrase, lparen, rparen, word = match.groups()
         if phrase is not None:
@@ -158,15 +154,16 @@ def _make_leaf(text: str) -> Node:
 
 # --- Парсер (рекурсивний спуск) ---
 
+
 class _Parser:
-    def __init__(self, tokens: List[Tuple[str, str]]):
+    def __init__(self, tokens: list[tuple[str, str]]) -> None:
         self.tokens = tokens
         self.pos = 0
 
-    def _peek(self):
+    def _peek(self) -> str | None:
         return self.tokens[self.pos][0] if self.pos < len(self.tokens) else None
 
-    def _next(self) -> Tuple[str, str]:
+    def _next(self) -> tuple[str, str]:
         token = self.tokens[self.pos]
         self.pos += 1
         return token

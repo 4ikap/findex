@@ -6,3 +6,11 @@ index.json
 !eval/queries.json
 __pycache__/
 *.pyc
+dist/
+.coverage
+htmlcov/
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+lab4_report.py
+lab4_report.txt

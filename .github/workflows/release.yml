@@ -1,0 +1,34 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      - name: Smoke test wheel in a clean environment
+        run: |
+          uv venv /tmp/clean
+          uv pip install --python /tmp/clean/bin/python dist/*.whl
+          cd /tmp
+          /tmp/clean/bin/findex --version
+          /tmp/clean/bin/findex --help
+
+      - name: Create GitHub Release with the wheel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.whl --title "findex $GITHUB_REF_NAME" --generate-notes

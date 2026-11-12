@@ -1,80 +1,87 @@
-import unittest
+import pytest
 
-from findex.query import And, Not, Or, Phrase, QuerySyntaxError, Term, parse_query
-from tests.helpers import make_index
+from findex.errors import MissingPositionsError, QuerySyntaxError
+from findex.index import Index
+from findex.query import And, Node, Not, Or, Phrase, Term, parse_query
+
+EXAMPLE = 'python AND (async OR await) NOT java "event loop"'
 
 
-class TestParser(unittest.TestCase):
-  """Тести порівнюють ДЕРЕВА, а не рядки."""
-
-  def test_example_from_assignment(self):
-    tree = parse_query('python AND (async OR await) NOT java "event loop"')
-    expected = And(
-        And(
-            And(Term("python"), Or(Term("async"), Term("await"))),
-            Not(Term("java")),
+@pytest.mark.parametrize(
+    ("query", "tree"),
+    [
+        ("python", Term("python")),
+        ("Python", Term("python")),  # нормалізація тим самим токенізатором
+        ("a AND b", And(Term("a"), Term("b"))),
+        ("a b", And(Term("a"), Term("b"))),  # неявний AND
+        ("a OR b AND c", Or(Term("a"), And(Term("b"), Term("c")))),  # AND сильніший за OR
+        ("(a OR b) AND c", And(Or(Term("a"), Term("b")), Term("c"))),
+        ("a NOT b", And(Term("a"), Not(Term("b")))),
+        ("NOT a", Not(Term("a"))),
+        ("NOT NOT a", Not(Not(Term("a")))),
+        ('"event loop"', Phrase(("event", "loop"))),
+        ("a AND b AND c", And(And(Term("a"), Term("b")), Term("c"))),  # ліва асоціативність
+        ("the and", And(Term("the"), Term("and"))),  # and з малої — звичайне слово
+        (
+            EXAMPLE,
+            And(
+                And(And(Term("python"), Or(Term("async"), Term("await"))), Not(Term("java"))),
+                Phrase(("event", "loop")),
+            ),
         ),
-        Phrase(("event", "loop")),
-    )
-    self.assertEqual(tree, expected)
+    ],
+)
+def test_parse_builds_expected_tree(query: str, tree: Node) -> None:
+    """Порівнюємо ДЕРЕВА, а не рядки."""
+    assert parse_query(query) == tree
 
-  def test_operators_build_same_tree(self):
+
+def test_operators_build_same_tree_as_parser() -> None:
     built = (
-        Term("python") & (Term("async") | Term("await")) & ~Term("java")
+        Term("python")
+        & (Term("async") | Term("await"))
+        & ~Term("java")
         & Phrase(("event", "loop"))
     )
-    parsed = parse_query('python AND (async OR await) NOT java "event loop"')
-    self.assertEqual(built, parsed)
-
-  def test_precedence_and_over_or(self):
-    self.assertEqual(
-        parse_query("a OR b AND c"), Or(Term("a"), And(Term("b"), Term("c")))
-    )
-
-  def test_leading_not_and_implicit_and(self):
-    self.assertEqual(parse_query("NOT a"), Not(Term("a")))
-    self.assertEqual(parse_query("a b"), And(Term("a"), Term("b")))
-
-  def test_lowercase_operators_are_terms(self):
-    self.assertEqual(parse_query("the and"), And(Term("the"), Term("and")))
-
-  def test_syntax_errors(self):
-    for bad in ["", "(a OR b", "a OR", 'a "b', "a )", "AND a"]:
-      with self.subTest(query=bad):
-        with self.assertRaises(QuerySyntaxError):
-          parse_query(bad)
+    assert built == parse_query(EXAMPLE)
 
 
-class TestEvaluate(unittest.TestCase):
-
-  def setUp(self):
-    self.index = make_index()
-
-  def ev(self, query):
-    return parse_query(query).evaluate(self.index)
-
-  def test_and_or_not(self):
-    self.assertEqual(self.ev("python AND code"), {"d1"})
-    self.assertEqual(self.ev("java OR async"), {"d1", "d2"})
-    self.assertEqual(self.ev("python NOT java"), {"d1", "d3"})
-    self.assertEqual(self.ev("NOT python"), {"d4"})
-
-  def test_full_example(self):
-    self.assertEqual(self.ev("python AND (async OR await) NOT java"), {"d1"})
-
-  def test_phrase(self):
-    self.assertEqual(self.ev('"event loop"'), {"d3", "d4"})
-    self.assertEqual(self.ev('"loop event"'), set())
-
-  def test_phrase_requires_positions(self):
-    self.index.has_positions = False
-    with self.assertRaises(ValueError):
-      self.ev('"event loop"')
-
-  def test_terms_skip_negated(self):
-    tree = parse_query('python NOT java "event loop"')
-    self.assertEqual(tree.terms(), ["python", "event", "loop"])
+@pytest.mark.parametrize(
+    "bad",
+    ["", "   ", "(a OR b", "a OR", 'a "b', "a )", "AND a", "a AND", "!!!", '""'],
+)
+def test_syntax_errors(bad: str) -> None:
+    with pytest.raises(QuerySyntaxError):
+        parse_query(bad)
 
 
-if __name__ == "__main__":
-  unittest.main()
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("python AND code", {"d1"}),
+        ("java OR async", {"d1", "d2"}),
+        ("python NOT java", {"d1", "d3"}),
+        ("NOT python", {"d4"}),
+        ("python AND (async OR await) NOT java", {"d1"}),
+        ('"event loop"', {"d3", "d4"}),
+        ('"loop event"', set()),
+        ('"event loop" AND python', {"d3"}),
+        ("ruby", set()),
+    ],
+)
+def test_evaluate(toy_index: Index, query: str, expected: set[str]) -> None:
+    assert parse_query(query).evaluate(toy_index) == expected
+
+
+def test_phrase_requires_positions(plain_corpus_index: Index) -> None:
+    with pytest.raises(MissingPositionsError):
+        parse_query('"темна ніч"').evaluate(plain_corpus_index)
+
+
+def test_phrase_on_real_corpus(corpus_index: Index) -> None:
+    assert parse_query('"темна ніч"').evaluate(corpus_index) == {"a.bz2_line_4", "b.bz2_line_2"}
+    assert parse_query('"ніч темна"').evaluate(corpus_index) == set()
+
+
+def test_terms_skip_negated() -> None:
+    assert parse_query('python NOT java "event loop"').terms() == ["python", "event", "loop"]

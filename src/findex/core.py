@@ -1,34 +1,55 @@
 import bz2
-from functools import lru_cache
+import logging
+from collections.abc import Callable, Iterator
+from functools import cache
 from pathlib import Path
-from typing import Generator, Tuple
+
+from findex.errors import DocumentError
+
+log = logging.getLogger("findex.core")
+
+_PROGRESS_EVERY = 2000  # як часто (у рядках) повідомляти про прогрес читання
 
 
-def iter_documents(data_dir: str | Path) -> Generator[Tuple[str, str], None, None]:
-    """Генератор, який обходить папку з даними, знаходить стиснуті .bz2 файли
+def corpus_size(data_dir: str | Path) -> int:
+    """Сумарний розмір усіх .bz2 файлів корпусу в байтах (для смуги прогресу)."""
+    return sum(path.stat().st_size for path in Path(data_dir).rglob("*.bz2"))
 
-    та повертає документи (рядки) по одному у форматі кортежу:
-    (ідентифікатор_документа, вміст_тексту).
+
+def iter_documents(
+    data_dir: str | Path,
+    on_bytes: Callable[[int], None] | None = None,
+) -> Iterator[tuple[str, str]]:
+    """Лінивий генератор документів корпусу: (doc_id, текст рядка).
+
+    Обходить папку, знаходить стиснуті .bz2 файли (у стабільному, відсортованому
+    порядку) та читає їх потоково, без розпакування на диск.
+
+    on_bytes — необов'язковий колбек: скільки нових стиснутих байтів прочитано.
+    Сума викликів дорівнює розміру прочитаних файлів (див. corpus_size).
+    Пошкоджений файл не зупиняє обхід: попередження йде в лог.
     """
-    data_path = Path(data_dir)
-
-    # Шукаємо всі .bz2 файли у папці data
-    for file_path in data_path.rglob("*.bz2"):
+    for file_path in sorted(Path(data_dir).rglob("*.bz2")):
         try:
-            # Відкриваємо bz2 архів у текстовому режимі без повного розпакування на диск
-            with bz2.open(
-                file_path, "rt", encoding="utf-8", errors="ignore"
-            ) as f:
-                for line_num, line in enumerate(f, 1):
-                    doc_id = f"{file_path.name}_line_{line_num}"
-                    yield doc_id, line.strip()
-        except Exception as e:
-            print(f"Помилка читання файлу {file_path.name}: {e}")
+            file_size = file_path.stat().st_size
+            with (
+                file_path.open("rb") as raw,
+                bz2.open(raw, "rt", encoding="utf-8", errors="ignore") as stream,
+            ):
+                reported = 0
+                for line_num, line in enumerate(stream, 1):
+                    yield f"{file_path.name}_line_{line_num}", line.strip()
+                    if on_bytes is not None and line_num % _PROGRESS_EVERY == 0:
+                        position = raw.tell()
+                        on_bytes(position - reported)
+                        reported = position
+                if on_bytes is not None:
+                    on_bytes(file_size - reported)
+        except (OSError, EOFError, ValueError) as exc:
+            log.warning("Помилка читання файлу %s: %s", file_path.name, exc)
 
 
-# --- ЛАБ 3: повернення тексту документа за його doc_id (потрібно для сніпетів) ---
-
-@lru_cache(maxsize=None)
+@cache
 def _find_file(data_dir: str, name: str) -> Path | None:
     """Шукає .bz2 файл за іменем у папці з даними (результат кешується)."""
     for file_path in Path(data_dir).rglob("*.bz2"):
@@ -41,32 +62,15 @@ def read_document(data_dir: str | Path, doc_id: str) -> str:
     """Повертає текст документа за doc_id виду '<файл>.bz2_line_<N>'."""
     name, sep, number = doc_id.rpartition("_line_")
     if not sep or not number.isdigit():
-        raise ValueError(f"Невірний doc_id: {doc_id!r}")
+        raise DocumentError(f"Невірний doc_id: {doc_id!r}")
 
     file_path = _find_file(str(data_dir), name)
     if file_path is None:
-        raise FileNotFoundError(f"Файл {name} не знайдено в {data_dir}")
+        raise DocumentError(f"Файл {name} не знайдено в {data_dir}")
 
     target = int(number)
-    with bz2.open(file_path, "rt", encoding="utf-8", errors="ignore") as f:
-        for line_num, line in enumerate(f, 1):
+    with bz2.open(file_path, "rt", encoding="utf-8", errors="ignore") as stream:
+        for line_num, line in enumerate(stream, 1):
             if line_num == target:
                 return line.strip()
-    raise KeyError(f"У файлі {name} немає рядка {target}")
-
-
-if __name__ == "__main__":
-  # Оскільки core.py лежить у src/findex/, а папка data — в корені проєкту (findex/data),
-  # піднімемося на два рівня вгору, щоб знайти папку data:
-  data_path = Path(__file__).resolve().parent.parent.parent / "data"
-
-  print(f"Шукаємо дані в: {data_path}")
-
-  # Перевіряємо роботу генератора
-  count = 0
-  for doc_id, text in iter_documents(data_path):
-    print(f"ID: {doc_id}")
-    print(f"Текст: {text[:100]}...")  # Виведе перші 100 символів рядка
-    count += 1
-    if count >= 3:  # Виведемо лише перші 3 документи для перевірки
-      break
+    raise DocumentError(f"У файлі {name} немає рядка {target}")

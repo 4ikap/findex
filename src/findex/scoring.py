@@ -1,9 +1,10 @@
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    from findex.index import Index
+from findex.index import Index
+
+ScorerName = Literal["bm25", "tfidf"]
 
 
 @runtime_checkable
@@ -14,20 +15,18 @@ class Scorer(Protocol):
     df      — у скількох документах корпусу трапляється термін
     doc_len — довжина документа в токенах
     index   — індекс (звідси беруться num_docs та avg_doc_length)
+
+    Реалізації нічого не наслідують: pyright перевіряє відповідність структурно.
     """
 
-    def score(self, tf: int, df: int, doc_len: int, index: "Index") -> float: ...
+    def score(self, tf: int, df: int, doc_len: int, index: Index) -> float: ...
 
 
 @dataclass(frozen=True)
 class TfIdf:
-    """TF-IDF: (1 + ln tf) * idf / sqrt(довжина документа).
+    """TF-IDF: (1 + ln tf) * ln(1 + N/df) / sqrt(довжина документа)."""
 
-    ln tf — «стеля» для повторень; ділення на sqrt(довжини) — нормалізація,
-    щоб короткі документи не програвали довгим.
-    """
-
-    def score(self, tf: int, df: int, doc_len: int, index: "Index") -> float:
+    def score(self, tf: int, df: int, doc_len: int, index: Index) -> float:
         if tf <= 0 or df <= 0:
             return 0.0
         idf = math.log(1 + index.num_docs / df)
@@ -41,7 +40,7 @@ class BM25:
     k1: float = 1.5
     b: float = 0.75
 
-    def score(self, tf: int, df: int, doc_len: int, index: "Index") -> float:
+    def score(self, tf: int, df: int, doc_len: int, index: Index) -> float:
         if tf <= 0 or df <= 0:
             return 0.0
         n = index.num_docs
@@ -49,3 +48,12 @@ class BM25:
         avg_len = index.avg_doc_length or 1.0
         length_norm = 1 - self.b + self.b * doc_len / avg_len
         return idf * tf * (self.k1 + 1) / (tf + self.k1 * length_norm)
+
+
+def make_scorer(name: ScorerName) -> Scorer:
+    """Створює рейтинг за назвою (Literal не дає передати неіснуючу)."""
+    if name == "bm25":
+        return BM25()
+    if name == "tfidf":
+        return TfIdf()
+    raise ValueError(f"Невідомий scorer: {name!r}")

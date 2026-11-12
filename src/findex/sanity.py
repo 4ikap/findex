@@ -1,18 +1,14 @@
-"""Три sanity-check рейтингу на вашому корпусі.
+"""Три sanity-check рейтингу на корпусі (результат — markdown-таблиця для звіту)."""
 
-    python -m findex.sanity index.bin
+from collections.abc import Callable
 
-Виводить markdown, який можна вставити в README.
-"""
-import argparse
-import logging
-from pathlib import Path
-
-from findex.index import Index, open_index
+from findex.index import Index
 from findex.scoring import BM25, Scorer, TfIdf
 
 
 def run_checks(index: Index) -> str:
+    """Перевіряє: рідкий термін вищий за частий, 20-те повторення майже нічого
+    не додає, короткий документ вищий за довгий. Повертає markdown."""
     words = [t for t in index if t.isalpha() and len(t) >= 4]
     rare = min(words, key=index.df)
     frequent = max(words, key=index.df)
@@ -22,41 +18,37 @@ def run_checks(index: Index) -> str:
 
     lines = [
         f"Корпус: {index.num_docs} документів, середня довжина {index.avg_doc_length:.1f} токенів.",
-        f"Рідкий термін: `{rare}` (df={index.df(rare)}), частий: `{frequent}` (df={index.df(frequent)}).",
+        f"Рідкий термін: `{rare}` (df={index.df(rare)}), "
+        f"частий: `{frequent}` (df={index.df(frequent)}).",
         "",
         "| Перевірка | TF-IDF | BM25 |",
         "| :--- | :--- | :--- |",
     ]
 
-    def row(title, fn):
-        cells = [fn(s) for s in (TfIdf(), BM25())]
-        lines.append(f"| {title} | {cells[0]} | {cells[1]} |")
-
-    def check1(s: Scorer) -> str:
+    def check_rare_vs_frequent(s: Scorer) -> str:
         a = s.score(1, index.df(rare), avg_len, index)
         b = s.score(1, index.df(frequent), avg_len, index)
         return f"{'✅' if a > b else '❌'} рідкий {a:.4f} > частий {b:.4f}"
 
-    def check2(s: Scorer) -> str:
+    def check_saturation(s: Scorer) -> str:
         first = s.score(1, index.df(rare), avg_len, index)
-        gain = s.score(20, index.df(rare), avg_len, index) - s.score(19, index.df(rare), avg_len, index)
-        return f"{'✅' if gain < 0.1 * first else '❌'} 1-е входження +{first:.4f}, 20-те +{gain:.4f}"
+        tf20 = s.score(20, index.df(rare), avg_len, index)
+        tf19 = s.score(19, index.df(rare), avg_len, index)
+        gain = tf20 - tf19
+        mark = "✅" if gain < 0.1 * first else "❌"
+        return f"{mark} 1-е входження +{first:.4f}, 20-те +{gain:.4f}"
 
-    def check3(s: Scorer) -> str:
+    def check_length(s: Scorer) -> str:
         short = s.score(1, index.df(rare), short_len, index)
         long_ = s.score(1, index.df(rare), long_len, index)
-        return f"{'✅' if short > long_ else '❌'} короткий ({short_len}) {short:.4f} > довгий ({long_len}) {long_:.4f}"
+        mark = "✅" if short > long_ else "❌"
+        return f"{mark} короткий ({short_len}) {short:.4f} > довгий ({long_len}) {long_:.4f}"
 
-    row("1. Рідкий термін вище частого (tf=1)", check1)
-    row("2. 20-те повторення майже нічого не додає", check2)
-    row("3. Короткий документ вище довгого (tf=1)", check3)
+    checks: list[tuple[str, Callable[[Scorer], str]]] = [
+        ("1. Рідкий термін вище частого (tf=1)", check_rare_vs_frequent),
+        ("2. 20-те повторення майже нічого не додає", check_saturation),
+        ("3. Короткий документ вище довгого (tf=1)", check_length),
+    ]
+    for title, check in checks:
+        lines.append(f"| {title} | {check(TfIdf())} | {check(BM25())} |")
     return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sanity-check рейтингу")
-    parser.add_argument("index_file", type=Path)
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    with open_index(args.index_file) as idx:
-        print(run_checks(idx))

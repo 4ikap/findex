@@ -1,19 +1,20 @@
 import functools
 import logging
 import time
+from collections.abc import Callable
 
 log = logging.getLogger("findex")
 
 
-def timed(func):
-    """Декоратор: логує, скільки мілісекунд виконувалась функція.
+def timed[**P, R](func: Callable[P, R]) -> Callable[P, R]:
+    """Декоратор: логує (рівень INFO), скільки мілісекунд виконувалась функція.
 
-    functools.wraps зберігає ім'я та docstring оригінальної функції.
-    Час логується навіть якщо функція кинула виняток.
+    functools.wraps зберігає ім'я та docstring оригіналу. Час логується і тоді,
+    коли функція кинула виняток.
     """
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         start = time.perf_counter()
         try:
             return func(*args, **kwargs)

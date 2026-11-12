@@ -1,8 +1,6 @@
 import tracemalloc
-from dataclasses import dataclass
 from array import array
-from findex.index import build_inverted_index
-from pathlib import Path
+from dataclasses import dataclass
 
 
 # 1. Звичайний dataclass
@@ -19,15 +17,12 @@ class SlottedPosting:
     freq: int
 
 
-def run_memory_benchmark(data_dir: Path):
-    print("=== БЕНЧМАРК ПАМ'ЯТІ ДЛЯ ТРИЬОХ ВАРІАНТІВ ПОСТІНГІВ ===")
+def run_memory_benchmark() -> None:
+    """Порівнює пам'ять трьох варіантів зберігання 500 000 постінгів (Лаб 2)."""
+    print("=== БЕНЧМАРК ПАМ'ЯТІ ДЛЯ ТРЬОХ ВАРІАНТІВ ПОСТІНГІВ ===")
 
-    # Запускаємо звичайний датаклас
+    # Варіант 1: звичайний dataclass
     tracemalloc.start()
-    # Для демонстрації візьмемо невелику частину або збережемо структуру
-
-
-    # Варіант 1: Звичайний dataclass
     normal_list = [NormalPosting(doc_id=f"doc_{i}", freq=1) for i in range(500_000)]
     _, peak_normal = tracemalloc.get_traced_memory()
     tracemalloc.stop()
@@ -42,10 +37,11 @@ def run_memory_benchmark(data_dir: Path):
 
     # Варіант 3: array('I') (числа для doc_id та freq)
     tracemalloc.start()
-    doc_ids_array = array('I', range(500_000))
-    freqs_array = array('I', [1] * 500_000)
+    doc_ids_array = array("I", range(500_000))
+    freqs_array = array("I", [1] * 500_000)
     _, peak_array = tracemalloc.get_traced_memory()
     tracemalloc.stop()
+    del doc_ids_array, freqs_array
 
     print(f"1. Звичайний dataclass (500k об'єктів): {peak_normal / 1024 / 1024:.2f} MB")
     print(f"2. Dataclass з slots=True (500k об'єктів): {peak_slotted / 1024 / 1024:.2f} MB")
@@ -53,5 +49,4 @@ def run_memory_benchmark(data_dir: Path):
 
 
 if __name__ == "__main__":
-    data_path = Path("data")
-    run_memory_benchmark(data_path)
+    run_memory_benchmark()

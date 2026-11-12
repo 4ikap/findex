@@ -1,13 +1,13 @@
 import re
 from bisect import bisect_left, bisect_right
-from typing import Iterable, Tuple
+from collections.abc import Iterable
 
 
 def best_snippet(
     text: str,
     terms: Iterable[str],
     window: int = 80,
-    mark: Tuple[str, str] = ("**", "**"),
+    mark: tuple[str, str] = ("**", "**"),
 ) -> str:
     """Вікно ±window символів навколо найкращого входження термів із підсвіткою.
 
