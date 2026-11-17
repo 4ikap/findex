@@ -5,7 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="fc507655-35b8-4de3-90a1-340a6b64c837" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/scripts/benchmark_lab05.py" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/benchmark_lab05.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/findex/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/findex/cli.py" afterDir="false" />
@@ -65,7 +66,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1794909263763</updated>
-      <workItem from="1794909265517" duration="1417000" />
+      <workItem from="1794909265517" duration="1847000" />
     </task>
     <servers />
   </component>

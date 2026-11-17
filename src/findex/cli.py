@@ -13,8 +13,8 @@ from rich.progress import Progress
 from rich.table import Table
 
 from findex.index import load_binary, save_binary
-from findex.model import Index
 from findex.parallel import build_parallel
+from findex.model import Index
 from findex.rank import Scorer, snippet
 
 app = typer.Typer(no_args_is_help=True, help="findex: corpus indexing and ranked search")
@@ -108,6 +108,31 @@ def stats_command(data: Path = typer.Argument(...)) -> None:
         console.print(
             f"Documents: {result.documents}; tokens: {result.tokens}; vocabulary: {result.vocabulary}"
         )
+    except (ValueError, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+
+@app.command("crawl")
+def crawl_command(
+    url: str = typer.Argument(..., help="Permitted starting URL"),
+    out: Path = typer.Option(Path("crawl.jsonl"), "--out"),
+    max_pages: int = typer.Option(200, "--max-pages", min=1),
+    concurrency: int = typer.Option(5, "--concurrency", min=1),
+) -> None:
+    """Crawl a site, writing each fetched page to JSONL."""
+    import asyncio
+
+    from findex.crawler import crawl_to_jsonl
+
+    try:
+        total = asyncio.run(
+            crawl_to_jsonl(
+                url, out, max_pages=max_pages, concurrency=concurrency
+            )
+        )
+        console.print(f"Saved {total} pages to {out}")
     except (ValueError, OSError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
