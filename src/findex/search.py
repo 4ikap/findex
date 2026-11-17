@@ -1,207 +1,123 @@
-import heapq
-import logging
-from collections import defaultdict
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-from functools import lru_cache
+"""Boolean search over an inverted index."""
+
+from __future__ import annotations
+
+import argparse
+import time
+import tracemalloc
 from pathlib import Path
-from typing import Literal
 
-from findex.core import read_document
-from findex.index import Index, Posting
-from findex.query import parse_query
-from findex.scoring import BM25, Scorer
-from findex.snippets import best_snippet
-from findex.utils import timed
-
-log = logging.getLogger("findex")
-
-# ============================================================
-# Лаб 2 (залишено): булеві движки merge / set для запитів "термін ОПЕРАТОР термін".
-# Працюють і з Index, бо він підтримує index.get(term, []).
-# ============================================================
-
-# --- Движок 1: Two-Pointer Merge ---
+from findex.index import load_binary, load_pickle
+from findex.tokenize import tokenize
 
 
-def merge_intersect(p1: list[Posting], p2: list[Posting]) -> list[Posting]:
-    result: list[Posting] = []
-    i, j = 0, 0
-    while i < len(p1) and j < len(p2):
-        if p1[i].doc_id == p2[j].doc_id:
-            result.append(p1[i])
+def merge_intersection(a, b):
+    i = j = 0
+    out = []
+    while i < len(a) and j < len(b):
+        if a[i] == b[j]:
+            out.append(a[i])
             i += 1
             j += 1
-        elif p1[i].doc_id < p2[j].doc_id:
+        elif a[i] < b[j]:
             i += 1
         else:
             j += 1
-    return result
+    return out
 
 
-def merge_union(p1: list[Posting], p2: list[Posting]) -> list[Posting]:
-    result: list[Posting] = []
-    i, j = 0, 0
-    while i < len(p1) and j < len(p2):
-        if p1[i].doc_id == p2[j].doc_id:
-            result.append(p1[i])
+def merge_union(a, b):
+    i = j = 0
+    out = []
+    while i < len(a) or j < len(b):
+        if j == len(b) or (i < len(a) and a[i] < b[j]):
+            x = a[i]
             i += 1
+        elif i == len(a) or b[j] < a[i]:
+            x = b[j]
             j += 1
-        elif p1[i].doc_id < p2[j].doc_id:
-            result.append(p1[i])
-            i += 1
         else:
-            result.append(p2[j])
+            x = a[i]
+            i += 1
             j += 1
-    result.extend(p1[i:])
-    result.extend(p2[j:])
-    return result
+        out.append(x)
+    return out
 
 
-def merge_not(p1: list[Posting], p2: list[Posting]) -> list[Posting]:
-    exclude = {p.doc_id for p in p2}
-    return [p for p in p1 if p.doc_id not in exclude]
+def merge_difference(a, b):
+    i = j = 0
+    out = []
+    while i < len(a):
+        if j == len(b) or a[i] < b[j]:
+            out.append(a[i])
+            i += 1
+        elif a[i] == b[j]:
+            i += 1
+            j += 1
+        else:
+            j += 1
+    return out
 
 
-# --- Движок 2: Python Set ---
-
-
-def set_intersect(p1: list[Posting], p2: list[Posting]) -> set[str]:
-    return {p.doc_id for p in p1}.intersection(p.doc_id for p in p2)
-
-
-def set_union(p1: list[Posting], p2: list[Posting]) -> set[str]:
-    return {p.doc_id for p in p1}.union(p.doc_id for p in p2)
-
-
-def set_not(p1: list[Posting], p2: list[Posting]) -> set[str]:
-    return {p.doc_id for p in p1}.difference(p.doc_id for p in p2)
-
-
-def execute_query(
-    query: str,
-    index: Mapping[str, list[Posting]],
-    engine: Literal["merge", "set"] = "merge",
-) -> set[str]:
-    """Простий булевий запит «термін [AND|OR|NOT термін]» (Лаб 2).
-
-    Завжди повертає множину doc_id. Для складних запитів із дужками та фразами
-    використовуйте SearchEngine.
-    """
-    parts = query.strip().split()
+def boolean_search(index, query, engine="merge"):
+    if engine not in ("merge", "set"):
+        raise ValueError("Invalid engine")
+    parts = query.split()
     if not parts:
-        return set()
-
-    postings1 = index.get(parts[0].lower(), [])
-    if len(parts) == 1:
-        return {p.doc_id for p in postings1}
-
-    op = parts[1].upper()
-    postings2 = index.get(parts[2].lower(), []) if len(parts) > 2 else []
-
-    if engine == "merge":
-        if op == "AND":
-            return {p.doc_id for p in merge_intersect(postings1, postings2)}
-        if op == "OR":
-            return {p.doc_id for p in merge_union(postings1, postings2)}
-        if op == "NOT":
-            return {p.doc_id for p in merge_not(postings1, postings2)}
-        return {p.doc_id for p in postings1}
-
-    if op == "AND":
-        return set_intersect(postings1, postings2)
-    if op == "OR":
-        return set_union(postings1, postings2)
-    if op == "NOT":
-        return set_not(postings1, postings2)
-    return {p.doc_id for p in postings1}
-
-
-# ============================================================
-# Лаб 3: ранжований пошук
-# ============================================================
-
-
-@dataclass(frozen=True, order=True)
-class SearchResult:
-    """Результат пошуку. order=True: порівнюється за score (doc_id не бере участі)."""
-
-    score: float
-    doc_id: str = field(compare=False)
-
-
-class SearchEngine:
-    """Ранжований пошук: парсить запит, знаходить документи, рахує бали Scorer-ом."""
-
-    def __init__(self, index: Index, scorer: Scorer | None = None, cache_size: int = 128) -> None:
-        self.index = index
-        self.scorer: Scorer = scorer or BM25()
-        # lru_cache: рядок запиту -> (множина doc_id, терміни для рейтингу)
-        self._cached_match = lru_cache(maxsize=cache_size)(self._match)
-        # коли індекс закривається, кеш очищається
-        index.on_close(self._cached_match.cache_clear)
-
-    def _match(self, query: str) -> tuple[frozenset[str], tuple[str, ...]]:
-        tree = parse_query(query)
-        log.debug("Розібраний запит: %r", tree)
-        ids = frozenset(tree.evaluate(self.index))
-        terms = tuple(dict.fromkeys(tree.terms()))  # унікальні, зі збереженням порядку
-        return ids, terms
-
-    def matching(self, query: str) -> tuple[frozenset[str], tuple[str, ...]]:
-        """Обгортка над кешем, яка пише в лог cache HIT / MISS."""
-        hits_before = self._cached_match.cache_info().hits
-        result = self._cached_match(query)
-        if self._cached_match.cache_info().hits > hits_before:
-            log.info("[cache] HIT  %r", query)
+        raise ValueError("Empty query")
+    result = None
+    operator = "AND"
+    expecting_term = True
+    for part in parts:
+        if part.upper() in {"AND", "OR", "NOT"}:
+            if not expecting_term:
+                operator = part.upper()
+                expecting_term = True
+                continue
+            if result is None and part.upper() == "NOT":
+                operator = "NOT"
+                continue
+            raise ValueError("Unexpected operator")
+        tokens = list(tokenize(part))
+        if len(tokens) != 1:
+            raise ValueError("Expected one term")
+        ids = [doc for doc, _ in index.postings.get(tokens[0], ())]
+        if result is None:
+            result = merge_difference(sorted(index.documents), ids) if operator == "NOT" else ids
+        elif engine == "merge":
+            result = {"AND": merge_intersection, "OR": merge_union, "NOT": merge_difference}[
+                operator
+            ](result, ids)
         else:
-            log.info("[cache] MISS %r", query)
-        return result
-
-    @timed
-    def search(self, query: str, k: int = 10) -> list[SearchResult]:
-        ids, terms = self.matching(query)
-
-        # накопичуємо бали по всіх термінах запиту
-        scores: defaultdict[str, float] = defaultdict(float)
-        for term in terms:
-            df = self.index.df(term)
-            for posting in self.index.get(term, ()):
-                if posting.doc_id in ids:
-                    scores[posting.doc_id] += self.scorer.score(
-                        posting.freq, df, self.index.doc_length(posting.doc_id), self.index
-                    )
-
-        # sorted() — щоб при однакових балах порядок був детермінованим
-        candidates = sorted(scores) if scores else sorted(ids)
-        results = (SearchResult(scores.get(doc_id, 0.0), doc_id) for doc_id in candidates)
-        return heapq.nlargest(k, results)
+            a, b = set(result), set(ids)
+            result = sorted({"AND": a & b, "OR": a | b, "NOT": a - b}[operator])
+        operator = "AND"
+        expecting_term = False
+    if expecting_term:
+        raise ValueError("Query ends with operator")
+    return result
 
 
-@dataclass(frozen=True)
-class Hit:
-    """Рядок видачі: позиція, бал, документ і (необов'язково) сніпет."""
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("index", type=Path)
+    p.add_argument("query")
+    p.add_argument("--engine", choices=("merge", "set"), default="merge")
+    p.add_argument("--format", choices=("binary", "pickle"), default="binary")
+    a = p.parse_args()
+    tracemalloc.start()
+    t = time.perf_counter()
+    idx = (load_binary if a.format == "binary" else load_pickle)(a.index)
+    matches = boolean_search(idx, a.query, a.engine)
+    elapsed = time.perf_counter() - t
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    print(f"Matches: {len(matches)}")
+    for doc in matches[:50]:
+        meta = idx.documents[doc]
+        print(f"{doc}\tlen={meta.length}\t{meta.path}")
+    print(f"Time: {elapsed:.4f} s; peak: {peak / 1048576:.3f} MiB")
 
-    rank: int
-    score: float
-    doc_id: str
-    snippet: str | None = None
 
-
-def run_query(
-    engine: SearchEngine,
-    query: str,
-    k: int,
-    data_dir: Path | None = None,
-    mark: tuple[str, str] = ("**", "**"),
-) -> list[Hit]:
-    """Виконує запит і (якщо задано data_dir) додає до результатів сніпети."""
-    results = engine.search(query, k)
-    terms = parse_query(query).terms()
-    hits: list[Hit] = []
-    for rank, result in enumerate(results, 1):
-        snippet: str | None = None
-        if data_dir is not None:
-            snippet = best_snippet(read_document(data_dir, result.doc_id), terms, mark=mark)
-        hits.append(Hit(rank, result.score, result.doc_id, snippet))
-    return hits
+if __name__ == "__main__":
+    main()

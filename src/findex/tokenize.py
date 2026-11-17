@@ -1,22 +1,17 @@
+"""Tokenizer: NFC, casefold, Unicode words; apostrophes, hyphens and digits."""
+
 import re
 import unicodedata
 from collections.abc import Iterator
 
-# Дозволяє букви (включно з українськими ї, і, є, ґ), цифри, а також апострофи,
-# підкреслення та дефіси всередині слів.
-_TOKEN_PATTERN = re.compile(r"[a-zа-яіїєґ0-9]+(?:['’_-][a-zа-яіїєґ0-9]+)*")
+# Apostrophes inside a word are accepted (ASCII ' and typographic ’).
+# A hyphen separates words. Digits are retained, including standalone numbers.
+# Underscores are treated as separators; \w is Unicode-aware in Python.
+WORD_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
 
 
 def tokenize(text: str) -> Iterator[str]:
-    """Потоковий генератор токенів із тексту:
-
-    1. Нормалізує Unicode (NFC).
-    2. Переводить у нижній регістр.
-    3. Знаходить слова регулярним виразом.
-    """
-    if not text:
-        return
-
-    normalized_text = unicodedata.normalize("NFC", text).lower()
-    for match in _TOKEN_PATTERN.finditer(normalized_text):
+    """Yield normalized tokens lazily using re.finditer()."""
+    normalized = unicodedata.normalize("NFC", text).casefold()
+    for match in WORD_RE.finditer(normalized):
         yield match.group()
